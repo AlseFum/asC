@@ -1,286 +1,197 @@
-import { SIGN, SYNTAX, _seq, _collector, _eq } from './util.js'
-export function PrimaryExpression(tokens, offset = 0) {
-    let firstToken = tokens[offset]; if (!firstToken) return false;
-    if (
-        firstToken[0] == SIGN.IDENTIFIER
-        || firstToken[0] == SIGN.STRING
-        || firstToken[0] == SIGN.NUMBER
-    ) {
-        return { value: firstToken[1], offset: 1, type: firstToken[0] }
-    } else if (_eq(firstToken, [SIGN.BRACKET, SIGN.LP])) {
-        let exp_res = Expression(tokens, offset + 1); if (!exp_res) return new Error("Illegal Grammar for Bracket:no Expression");
-        if (!_eq(tokens[offset + exp_res.offset + 1], [SIGN.BRACKET, SIGN.RP])) return new Error("Illegal Grammar:Unclosed Bracket");
-        return { type: SYNTAX.PARENTHESE, offset: 2 + exp_res.offset, content: exp_res }
-    }
-    return false;
+//一种：多线程，从根开始解析funcdecl
+//一种，单线程，最简单的
+//基础模型：堆栈式地堆叠表达式，在构造rule的时候加入一些减少重复识别的过程
+import { SIGN, fail } from "./util.js"
+export function isFalsy(n) {
+    if (n == undefined) return true;
+    return n[0] == false
 }
-////////////////////////////
-function memberRear(tokens, offset) {
-    let n = tokens[offset]; if (!n || !_eq(n, [SIGN.SYMBOL, "."])) return false;
-    let name = tokens[offset + 1]; if (!name || name[0] != SIGN.IDENTIFIER) return false;
-
-    let rear = memberRear(tokens, offset + 2) || applyRear(tokens, offset + 2);
-    if (!rear) return {
-        type: SYNTAX.MEMBER,
-        offset: 1 + (name.offset ?? 1),
-        name: name[1]
-    }
-
+export function isTruthy(n) {
+    if (n == undefined) return false;
+    return n[0] == true
+}
+export function slice(origin, start = 0) {
     return {
-        type: SYNTAX.MEMBER,
-        name: name[1],
-        rear,
-        offset: 2 + rear.offset
+        origin: origin.is_slice ? origin.origin : origin,
+        is_slice: true,
+        gap: start + (origin.gap ?? 0),
+        get(n = 0) {
+            // let res = this.origin[this.gap + n];
+            return this.origin[this.gap + n]
+        },
+        peek(n) {
+            return slice(this, n)
+        },
+        toJSON() {
+            return this.origin.slice(this.gap)
+        },
+        get length() {
+            return this.origin.length - this.gap;
+        }
     }
 }
-function applyRear(tokens, offset) {
-    let leftParen = tokens[offset]; if (!leftParen || !_eq(leftParen, [SIGN.BRACKET, "("])) return false;
-
-    let params = Expression(tokens, offset + 1);
-
-    let rightParen = tokens[offset + (params.offset ?? 0) + 1]; if (!rightParen || !_eq(rightParen, [SIGN.BRACKET, ")"])) return false;
-
-    let rear = applyRear(tokens, offset + (params.offset ?? 0) + 2) || memberRear(tokens, offset + (params.offset ?? 0) + 2);
-    if (rear) return {
-        type: SYNTAX.APPLY,
-        params,
-        rear,
-        offset: 2 + (params.offset ?? 0) + + rear.offset
-    };
-    else return {
-        type: SYNTAX.APPLY,
-        params,
-        offset: 2 + (params.offset ?? 0)
-    }
+export function collect(n) {
+    return slice(Array.from(n).filter(i => i[0] != SIGN.SPACE))
 }
-export function ChainExpression(tokens, offset = 0) {
-    //非常丑陋
-    let firstToken = PrimaryExpression(tokens, offset); if (!firstToken) return false;
-    let rear = memberRear(tokens, offset + 1) || applyRear(tokens, offset + 1);
-    if (!rear) return firstToken;
-    return _rearrange({ type: SYNTAX.CHAIN, object: firstToken, rear: rear, offset: rear.offset + firstToken.offset });
-}
-export function _rearrange(n) {
 
-    let chain = [], finalOffset = n.offset, iter = n.rear;
-    while (iter) { chain.push(iter); iter = iter.rear || iter.property; }
+export function $and(...fns) {
+    return function (slice, swc) {
+        let gap = 0, results = [];
+        for (let i = 0; i < fns.length; i++) {
+            if (gap > slice.length) return fail;
+            let result = fns[i](slice.peek(gap), swc);
+            if (isFalsy(result)) return fail;
 
-    let backed = n.object;
-
-    for (let i of chain) {
-
-        switch (i.type) {
-            case SYNTAX.MEMBER:
-
-                backed = {
-                    object: backed,
-                    type: SYNTAX.MEMBER,
-                    property: i.name
-                }
-                break;
-            case SYNTAX.APPLY:
-                backed = {
-                    object: backed,
-                    type: SYNTAX.APPLY,
-                    params: i.params
-                }
-                break;
+            gap += result[1];
+            results.push(result[2]);
         }
 
-    }
-
-    backed.offset = finalOffset;
-    return backed;
-}
-export function UnaryExpression(tokens, offset = 0) {
-    let operand = tokens[offset];
-    let checkOp = i => i?.[1] == "!" || i?.[1] == "~"
-    if (!operand || !checkOp(operand)) return false;
-    let value = UnaryExpression(tokens, offset + 1) || ChainExpression(tokens, offset + 1);
-    if (!value) return false;
-
-    return { type: SYNTAX.UNARY, value, offset: value.offset + 1, operand: operand[1] }
-
-}
-
-export function MultiDivExpression(tokens, offset = 0) {
-    let left = UnaryExpression(tokens, offset) || ChainExpression(tokens, offset);
-    if (!left) return false;
-
-    let operand = tokens[offset + left.offset];
-    let checkOp = i => i?.[1] == "*" || i?.[1] == "/"
-    if (!operand || !checkOp(operand)) { return left }
-    let right = Expression(tokens, offset + (left.offset ?? 1) + 1);
-    if (!right) return new Error("Illegal Grammar for Expression");
-    return { type: SYNTAX.BINARY, left, right, offset: left.offset + 1 + right.offset, operand: operand[1] }
-}
-export function AddSubExpression(tokens, offset = 0) {
-    let left = MultiDivExpression(tokens, offset);
-    if (!left) return false;
-
-    let operand = tokens[offset + left.offset];
-
-
-    let checkOp = i => i?.[1] == "+" || i?.[1] == "-"
-    if (!operand || !checkOp(operand)) { return left }
-    let right = Expression(tokens, offset + (left.offset ?? 1) + 1);
-    if (!right) return new Error("Illegal Grammar for Expression");
-    return { type: SYNTAX.BINARY, left, right, offset: left.offset + 1 + right.offset, operand: operand[1] }
-}
-export function CompExpression(tokens, offset = 0) {
-    let left = AddSubExpression(tokens, offset);
-    if (!left) return false;
-
-    let operand1 = tokens[offset + left.offset], operand2 = tokens[offset + left.offset + 1];
-
-
-    let checkOp = (i1, i2) => i1 && i2 && i1?.[1] == "=" && i2?.[1] == "=";
-    if (!checkOp(operand1, operand2)) return left;
-    let right = Expression(tokens, offset + (left.offset ?? 1) + 2);
-    if (!right) return new Error("Illegal Grammar for Expression");
-    return { type: SYNTAX.BINARY, left, right, offset: left.offset + 2 + right.offset, operand: operand1[1] + operand2[1] }
-
-}
-export function AssignExpression(tokens, offset = 0) {
-
-    let letName = CompExpression(tokens, offset); if (!letName) return false;
-    let assignSym = tokens[offset + 1]; if (!assignSym || !assignSym[0] == SIGN.SYMBOL || assignSym[1] != "=") return letName;
-
-    let expr = CompExpression(tokens, offset + 2);
-    if (!expr) return false;
-    return { type: SYNTAX.BINARY, left: letName, right: expr, offset: 2 + expr.offset, operand: "=" }
-}
-let _collexpr = _collector(AssignExpression, (t, i) => { return t[i]?.[0] == SIGN.SYMBOL && t[i]?.[1] == "," ? { offset: 1 } : false })
-export function CommaExpression(tokens, offset = 0) {
-    let res = _collexpr(tokens, offset)
-    if (!res) return false;
-    if (res[0].length == 1) return res[0][0]
-    return { type: SYNTAX.COMMA, content: res[0], offset: res[1] }
-
-}
-
-export let _declargs = _collector(PrimaryExpression, (t, i) => {
-    return t[i]?.[1] == "," ? { offset: 1 } : false
-})
-export function Expression(tokens, offset = 0) {
-    return CommaExpression(tokens, offset)
-}
-export function AssignStmt(tokens, offset = 0) {
-    let letKeyword = tokens[offset]; if (!letKeyword || !letKeyword[0] == SIGN.IDENTIFIER || letKeyword[1] != "let") return false;
-    let emm = AssignExpression(tokens, offset + 1);
-    if (!emm) return new Error("Illegal Grammar for AssignStmt")
-    return { type: SYNTAX.ASSIGN, id: emm.left, value: emm.right, offset: 1 + emm.offset }
-}
-
-export function _funcArgs(tokens, offset = 0) {
-    let n = tokens[offset]; if (!n) { return false; }
-    if (!(n[0] == SIGN.BRACKET && n[1] == "(")) { return false; }
-
-    let pa = _declargs(tokens, offset + 1); if (!pa) return false;
-
-    let end = tokens[offset + pa[1] + 1];
-    if (!(end?.[0] == SIGN.BRACKET && end?.[1] == ")")) { return false; }
-
-    return {
-        type: SYNTAX.ARGS, content: pa[0], offset: pa[1] + 2
+        return [true, gap, results];
     }
 }
-export function FuncDecl(tokens, offset = 0) {
-    let startiden = tokens[offset]; if (!startiden || !(startiden[0] == SIGN.IDENTIFIER && startiden[1] == "fn")) return false;
-    let funcname = tokens[offset + 1]; if (!funcname) return false;
-
-    let fnargs = _funcArgs(tokens, offset + 2);
-
-    if (!fnargs) return new Error("Illegal grammar:args");
-
-    let fnbody = StmtBlock(tokens, fnargs.offset + 2 + offset);
-    if (!fnbody) {
-        ; return new Error("Illegal grammar:body");
-    }
-    return {
-        type: SYNTAX.FUNC, name: funcname[1], args: fnargs, body: fnbody, offset: fnbody.offset + fnargs.offset + 2
+export function $or(...fns) {
+    return function (slice, swc) {
+        for (let fn of fns) {
+            let result = fn(slice, swc);
+            if (isTruthy(result)) { return result; }
+        }
+        return fail
     }
 }
 
+export function $maybe(fn) {
+    return function (slice, swc) {
+        let results = [], result = [true, 0],gap = 0;
+        while (isTruthy(result) && gap < slice.length) {
 
-export let IfStmt = _seq([
-    (t, i) => t[i]?.[1] == "if" ? { offset: 1 } : false,
-    _funcArgs,
-    StmtBlock
-], (coll, tokens) => {
-    return { type: SYNTAX.IFSTMT, condition: coll[1], body: coll[2], offset: coll[1].offset + coll[2].offset + 1 }
-})
-export let WhileStmt = _seq([
-    (t, i) => t[i]?.[1] == "while" ? { offset: 1 } : false,
-    CommaExpression,
-    StmtBlock
-], coll => {
-    return { type: SYNTAX.WHILESTMT, condition: coll[1], body: coll[2], offset: coll[1].offset + coll[2].offset + 1 }
-})
-export let ReturnStmt = _seq([
-    (t, i) => t[i]?.[0] == SIGN.IDENTIFIER && t[i]?.[1] == "return" ? { offset: 1 } : false,
-    Expression
-], (coll, tokens) => {
-    return { type: SYNTAX.RETURN, value: coll[1], offset: coll[1].offset + 1 }
-})
-
-export let BreakStmt = _seq([(t, i) => t[i]?.[0] == SIGN.IDENTIFIER && t[i][1] == "break"], coll => {
-    return { type: SYNTAX.BREAK, offset: 1 }
-})
-export let ContinueStmt = _seq([(t, i) => t[i]?.[0] == SIGN.IDENTIFIER && t[i][1] == "break"], coll => {
-    return { type: SYNTAX.CONTINUE, offset: 1 }
-})
-export let JumpStmt = function (tokens, offset) {
-    return BreakStmt(tokens, offset) || ContinueStmt(tokens, offset) || ReturnStmt(tokens, offset)
-}
-export let EmptyStmt = function (tokens, offset = 0) {
-    return _eq(tokens[offset], [SIGN.SEMI, null]) ? { offset: 0 } : false;
-}
-export function Stmt(tokens, offset = 0,forceSemicolon=true) {
-    let p = FuncDecl(tokens, offset) || IfStmt(tokens, offset) || WhileStmt(tokens, offset) || AssignStmt(tokens, offset) || JumpStmt(tokens, offset) || Expression(tokens, offset) || EmptyStmt(tokens, offset);
-
-    if (!p) return false;
-    if (!_eq(tokens[offset + (p.offset ?? 0)], [SIGN.SEMI, null])) {
-
-        if(forceSemicolon)return false;
-    }
-    return { type: SYNTAX.STMT, body: p, offset: (p.offset ?? 0) + 1 }
-}
-export function _stmtGroup(tokens, offset = 0) {
-    console.log("usling here")
-    let gap = 0; let n = Stmt(tokens, offset + gap);
-    let coll = [];
-    while (n) {
-        coll.push(n);
-        gap += n.offset;
-        n = Stmt(tokens, offset + gap);
-    }
-    coll.offset = gap;
-    return coll
-}
-export function StmtBlock(tokens, offset = 0) {
-
-    let leftBracket = tokens[offset]; if (!_eq(leftBracket,[SIGN.BRACKET,"{"])) return false;
-
-    let possibleStmts = [], gap = 1;
-    let stmt = Stmt(tokens, offset + gap);
-    while (stmt) {
-        possibleStmts.push(stmt);
-        gap += stmt.offset;
-        stmt = Stmt(tokens, offset + gap);
-    }
-    //loose semicolon for last statement
-    let lastStmt=Stmt(tokens,offset + gap,false);
-    if(lastStmt&&lastStmt.type&&lastStmt.offset>0){
-
-        possibleStmts.push(lastStmt);
-        gap+=lastStmt.offset-1;
-    }
-
-    let rightBracket = tokens[offset + gap];if (!rightBracket||!_eq(rightBracket,[SIGN.BRACKET,"}"])) {
-        return false;
-    }
-    return {
-        type: SYNTAX.STMTBLOCK, content: possibleStmts, offset: gap + 1
+            result = fn(slice.peek(gap), swc);
+            if (isTruthy(result)) {
+                gap += result[1];
+                results.push(result[2])
+            }//AUTOMATICALLY BREAK;
+        }
+        //to be refactored
+        if (results.length == 0) return [true, 0, fail]
+        return [true, gap, isTruthy(results[0]) || results[0] != false ? results : fail]
     }
 }
+//simply copy the $maybe
+export function $more(fn) {
+    return function (slice, swc) {
+
+        let results = [], result = true;
+        let gap = 0;
+        while (isTruthy(result) && gap < slice.length) {
+            result = fn(slice.peek(gap), swc);
+            if (isTruthy(result)) {
+                gap += result[1];
+                results.push(result[2])
+            }
+        }
+        return [isTruthy(results[0]), gap, isTruthy(results[0]) ? results : false]
+    }
+}
+export function $separate(fn, separator, { once = false, loose = true,auto_unfold = true } = {}) {
+    //once :fn could appear just once
+    return function (slice, swc) {
+        let results = []
+        //fnOrSep = 0 means fn, 1 means separator to be recved
+        let fnOrSep = 0;
+
+        let result = (fnOrSep ? separator : fn)(slice, swc);
+        if (isFalsy(result)) return fail;
+        let gap = result[1];
+        while (isTruthy(result) && gap <= slice.length) {
+            if (fnOrSep == 0) results.push(result[2])//ignore separator
+            if (fnOrSep == 0) fnOrSep = 1; else fnOrSep = 0;
+            result = (fnOrSep ? separator : fn)(slice.peek(gap), swc);
+            gap += result[1];
+        }
+        //some times you can't leave a single separator like a + b +
+        if (!loose && fnOrSep == 0) return fail
+        //1 1+3 all are valid
+        if (results.length == 1) if (once) return [true, gap, auto_unfold?results[0]:results]
+
+        if (results.length <= 0) return fail
+        return [true, gap, results];
+    }
+
+}
+////////////////////////////////////////////////
+//to process the data
+export const $process = (primifn, handler) => {
+    return function (slice, fold = false) {
+        if (fold) return primifn(slice, fold);
+        else {
+            let primi= primifn(slice, fold);
+            if (isFalsy(primi)) return fail;
+            return [primi[0],primi[1],handler(primi[2])];
+        }
+    };
+}
+//////////////////////////////////////////////
+export const $token = (type, value) => {
+    return function (slice) {
+        let $1 = slice.get(0)
+        if (!$1) return fail
+        return $1[0] == type && $1[1] == value ? [true, 1, { type, value: $1[1] }] : fail
+    }
+}
+export const $type = type => {
+    return function (slice) {
+        let $1 = slice.get(0)
+        if (!$1) return [false, 0]
+        return $1[0] == type ? [true, 1, { type, value: $1[1] }] : fail
+    }
+}
+export const $value = value => {
+    return function (slice) {
+        let $1 = slice.get(0)
+        if (!$1) return [false, 0]
+        return $1[1] == value ? [true, 1, { type: $1[0], value }] : fail
+    }
+}
+export const $kw = (value) => {
+    return function (slice) {
+        let $1 = slice.get(0)
+        if (!$1) return fail
+        return $1[0] == SIGN.IDENTIFIER && $1[1] == value ? [true, 1, { type: SIGN.IDENTIFIER, value: $1[1] }] : fail
+    }
+}
+
+export const $symbol = (value) => {
+    return function (slice) {
+        let $1 = slice.get(0)
+        if (!$1) return fail
+        return $1[0] == SIGN.SYMBOL && $1[1] == value ? [true, 1, { type: SIGN.SYMBOL, value: $1[1] }] : fail
+    }
+}
+export const $symbols = (value) => {
+    return function (slice) {
+        for(let i =0;i<slice.length;i++){
+            let $1 = slice.get(i)
+            if (!$1) return fail
+            if (!($1[0] == SIGN.SYMBOL && $1[1] == value[i])) return fail
+
+            if(i==value.length-1) return [true, i+1, { type: SIGN.SYMBOL, value: value }]
+        }
+        return fail
+    }
+}
+export const $bracket=(value) => {
+    return function (slice) {
+        let $1 = slice.get(0)
+        if (!$1) return fail
+        return $1[0] == SIGN.BRACKET && $1[1] == value ? [true, 1, { type: SIGN.BRACKET, value: $1[1] }] : fail
+    }
+}
+
+export const $indent = _ => {
+    return function (slice) {
+        let $1 = slice.get(0)
+        if (!$1) return fail
+        return $1[0] == SIGN.INDENT ? [true, 1, { type: SIGN.INDENT, value: $1[1] }] : fail
+    }
+}
+
+
