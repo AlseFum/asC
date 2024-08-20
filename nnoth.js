@@ -1,26 +1,36 @@
 import { tk } from "./tokenize.js"
 import {
-    isTruthy, isFalsy, collect,
-    $and, $or, $maybe, $separate,
-    $kw, $token, $symbol, $type, $process,$indent,
+    $and, $or, $maybe, $separate, $req,
+    $kw, $token, $symbol, $type, $process, $indent,
     $bracket,
     $symbols,
+
 } from './parser.js'
-import { jlog, SIGN, fail } from "./util.js"
+import { jlog, SIGN, SYNTAX, Fail, slice_by_iter, isTruthy, isFalsy, assert_truthy, assert_falsy } from "./util.js"
+const tokenize = source => slice_by_iter(tk(source))
+const tn = tokenize
 
-// used for reflex,thou it causes some performance loss, but it's the only way?
-const reflex = {}
+
+//fn_ind:0:default tokens
 
 
+//some frequent token
 const __ = $token(SIGN.IDENTIFIER, "_")
 const comma = $symbol(",")
-
+const LR = $bracket("(")
+const RR = $bracket(")")
+//
+// used for reflex,thou it causes some performance loss, but it's the only way?
+const reflex = {}
 const prima = (slice, swc) => reflex.prima(slice, swc)
 const expression = (slice, swc) => reflex.expression(slice, swc)
+const stmt = slice => reflex.stmt(slice)
+const stmtblock = slice => reflex.stmtblock(slice)
+
 
 const typemark = $process($and($symbol(":"), $maybe($type(SIGN.IDENTIFIER)))
     , result => {
-        return { type: "typemark", value: result[1][0].value }
+        return { type: SYNTAX.typemark, value: result[1][0].value }
     })
 
 let tuple_literal = $process($and(
@@ -28,7 +38,7 @@ let tuple_literal = $process($and(
     $separate(prima, $symbol(","), { once: false, auto_unfold: false }),
     $token(SIGN.BRACKET, ")")),
     result => {
-        return { type: "tuple", body: result.slice(1, -1)[0] }
+        return { type: SYNTAX.tuple, body: result.slice(1, -1)[0] }
     })
 const rest = $and($symbols("..."), expression)
 const array_literal = $process($and(
@@ -36,7 +46,7 @@ const array_literal = $process($and(
     $separate(prima, $symbol(","), { once: true, auto_unfold: false }),
     $maybe(rest),
     $token(SIGN.BRACKET, "]")), result => {
-        return { type: "array", body: result.slice(1, -1) }
+        return { type: SYNTAX.array, body: result.slice(1, -1) }
     })
 
 const object_literal = $process(
@@ -49,7 +59,7 @@ const object_literal = $process(
     result => {
 
         return {
-            type: "object", body: result[1].map(
+            type: SYNTAX.object, body: result[1].map(
                 i => {
                     return {
                         key: i[0]?.value
@@ -88,7 +98,6 @@ reflex.chain = $process($and(
     ))
 )
     , result => {
-
         if (isFalsy(result[1])) return result[0];
         else {
             let results = []
@@ -103,17 +112,11 @@ reflex.chain = $process($and(
     }
 )
 
-
-
-
 const unary = slice => reflex.unary(slice);
 reflex.unary = $process($and(
-    $maybe($or(
-        $symbol("~"),
-        $symbol("&"),
-        $symbol("-"),
-    )),
-    chain), result => {
+    $maybe($or($symbol("~"), $symbol("&"), $symbol("-"),)),
+    chain),
+    result => {
         return isFalsy(result[0]) ? result[1] : { type: "unary", prefix: result[0].map(p => p.value), value: result[1] }
     }
 )
@@ -125,13 +128,13 @@ reflex.multi = $process($and(
 ), result => {
     return isFalsy(result[1]) ? result[0] : { type: "multi", value: [result[0], ...result[1].map(i => 0 || { op: i[0].value, value: i[1] })] }
 })
+
+const binary = slice => reflex.binary(slice)
 reflex.binary = $process($and(
     multi, $maybe($and($symbol("+"), multi))
 ), result => {
     return isFalsy(result[1]) ? result[0] : { type: "binary", value: [result[0], ...result[1].map(i => 0 || { op: i[0].value, value: i[1] })] }
 })
-const binary = slice => reflex.binary(slice)
-
 const comparison = $or(
     $and(
         binary,
@@ -141,15 +144,10 @@ const comparison = $or(
 
 const expand = $and(prima, $symbol("."), $symbol("."), expression)
 
-
-
 reflex.expression = $or(rest, expand, comparison,)
 
-const stmt = slice => reflex.stmt(slice)
-const stmtblock = slice => reflex.stmtblock(slice)
-
-
-const equal_indent_block = (slice, swc) => {
+///////////////////////////////////////////////////
+const equal_indent_block = $and($symbol(":"), $maybe($indent()),(slice, swc) => {
     let results = []
     let fnOrSep = 0;
     let fn = stmt;
@@ -157,7 +155,7 @@ const equal_indent_block = (slice, swc) => {
     let separator = $or($token(SIGN.SEMI), $type(SIGN.INDENT))
 
     let result = (fnOrSep ? separator : fn)(slice, swc);
-    if (isFalsy(result)) return fail;
+    if (isFalsy(result)) return Fail;
     let gap = result[1];
     while (isTruthy(result) && gap <= slice.length) {
         if (fnOrSep == 0) results.push(result[2]); else {
@@ -168,63 +166,50 @@ const equal_indent_block = (slice, swc) => {
         result = (fnOrSep ? separator : fn)(slice.peek(gap), swc);
         gap += result[1];
     }
-    //some times you can't leave a single separator like a + b +
     if (results.length == 1) return [true, gap, results[0]]
 
-    if (results.length <= 0) return fail
+    if (results.length <= 0) return Fail
     return [true, gap, results];
-}
+})
+reflex.stmtblock = $and(
+    $bracket("{"),
+    $separate(stmt,
+        $or($type(SIGN.SEMI), $type(SIGN.INDENT)), { once: true }),
+    $bracket("}"))
+const singlestmt = $and(stmt, $or($type(SIGN.SEMI), $type(SIGN.INDENT)))
+
+const _stmts=$or(stmtblock, equal_indent_block, singlestmt)
+///////////////////////////////////////////////
+
 const control = $and(
     $or($kw("if"), $kw("while"), $kw("for")),
     $token(SIGN.BRACKET, "("), $separate(stmt, $type(SIGN.SEMI), { once: true }), $token(SIGN.BRACKET, ")"),
-    $or(stmtblock, $and($symbol(":"), equal_indent_block))
+    _stmts
 )
-const assignstmt=$and(chain, $symbol("="), expression)
+
+const assignstmt = $and($kw( "let"), $type(SIGN.IDENTIFIER), $symbol("="), expression)
 const iterstmt = $and(array_literal,
     $token(SIGN.BRACKET, "{"),
     $maybe(expression),
     $token(SIGN.BRACKET, "}"))
-reflex.stmt = $or(
-    control, iterstmt,assignstmt, expression
-)
-const jumpstmt=$and($or($kw("break"),$kw("continue"),$kw("return")),$or($indent,expression))
 
-reflex.stmtblock = $or(
-    $and(stmt, $or($token(SIGN.SEMI), $type(SIGN.INDENT))),
-    $and(
-        $token(SIGN.BRACKET, "{"),
-        $separate(stmt, $or($token(SIGN.SEMI), $type(SIGN.INDENT)),
-            { once: true }),
-        $token(SIGN.BRACKET, "}")
-    ))
-let equalindent1 = `d
-    a
-    e
-b`
-let equalindent2 = `d`
-// jlog(equal_indent_block(collect(tk(equalindent1)), 0))
-// jlog(equal_indent_block(collect(tk(equalindent2)), 0))
+const jumpstmt = $and($or($kw("break"), $kw("continue"), $kw("return")), $or(_stmts,$indent()))
 
-const fndecl = slice => reflex.fndecl(slice)
-reflex.fndecl = $and(
+
+const fndecl = $and(
     $kw("fn"),
     $type(SIGN.IDENTIFIER),
-    $token(SIGN.BRACKET, "("),
+    LR,
     $maybe($separate($and($type(SIGN.IDENTIFIER), $maybe(typemark)), $symbol(","), { once: true })),
-    $token(SIGN.BRACKET, ")"),
-    $or(stmtblock, $and($symbol(":"), equal_indent_block))
+    RR,
+    _stmts
 
 )
-//     ; (fndecl(collect(tk(`fn a():a
-//     b
-//     b
-//     b
-// c`)), 0))
+reflex.stmt = $or(
+    control, iterstmt, assignstmt, jumpstmt, expression,fndecl
+)
+jlog(fndecl(tn(`fn a():a
+    b
+    b`)))
 
-// ;(object_literal(collect(tk("{a:sdf=1,b:=2}")), false))
-// ;(prima(collect(tk(`(a)`)), 0))
-// ;(unary(collect(tk(`~&~~(aesf)`)), 0))
-// ;(binary(collect(tk(`aesf*34*23`)), 0))
-// ;(stmt(collect(tk("2+{a=45}.a")),false))
-jlog(jumpstmt(collect(tk("return a")), 0))
 console.log("finished")

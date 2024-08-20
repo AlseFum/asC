@@ -13,7 +13,7 @@ function setup(rules) {
         }
     }
 }
-export function* poll(rules, source) {
+export function* iterpoll(rules, source) {
     let ssm = setup(rules);
     let ind = 0;
     source += '\0';
@@ -143,22 +143,11 @@ const normal_identifier = (i, s, { next_state, no_consume }) => {
         return [SIGN.IDENTIFIER, si];
     }
 }
-export let sum = {
+export let tokendef = {
     normal, normal_indent,
     normal_string,normal_identifier,
     normal_number, normal_float, return_dot
 }
 export function tk(source) {
-    return poll(sum, source)
+    return iterpoll(tokendef, source)
 }
-// for (let i of poll(sum, `fn main() {
-//     let number = 5;
-//     let square = square(number);
-//     println!("The square of {} is {}", number, square);
-// }
-
-// fn square(x: i32) -> i32 {
-//     x * x
-// }`)) {
-//     console.log(i)
-// }
