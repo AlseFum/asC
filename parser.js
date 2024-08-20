@@ -35,7 +35,6 @@ export function $maybe(fn) {
             if (isTruthy(result)) {
                 gap += result[1];
                 results.push(result[2])
-                
             }//AUTOMATICALLY BREAK;
         }
         //to be refactored
@@ -145,7 +144,7 @@ export const $symbol = (value) => {
     }
 }
 export const $symbols = (value) => {
-    return function (slice) {
+    return function (slice,fn_ind) {
         for (let i = 0; i < slice.length; i++) {
             let $1 = slice.get(i)
             if (!$1) return Fail

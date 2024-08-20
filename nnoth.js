@@ -24,8 +24,8 @@ const RR = $bracket(")")
 const reflex = {}
 const prima = (slice, swc) => reflex.prima(slice, swc)
 const expression = (slice, swc) => reflex.expression(slice, swc)
-const stmt = slice => reflex.stmt(slice)
-const stmtblock = slice => reflex.stmtblock(slice)
+const stmt = (slice, fn_ind) => reflex.stmt(slice, fn_ind)
+const stmtblock = (slice, ind) => reflex.stmtblock(slice, ind)
 
 
 const typemark = $process($and($symbol(":"), $maybe($type(SIGN.IDENTIFIER)))
@@ -40,11 +40,15 @@ let tuple_literal = $process($and(
     result => {
         return { type: SYNTAX.tuple, body: result.slice(1, -1)[0] }
     })
-const rest = $and($symbols("..."), expression)
+// used in expansion
+const rest = $process($and($symbols("..."), prima)
+
+    , result => {
+        return { type: SYNTAX.rest, body: result[1] }
+    })
 const array_literal = $process($and(
     $token(SIGN.BRACKET, "["),
     $separate(prima, $symbol(","), { once: true, auto_unfold: false }),
-    $maybe(rest),
     $token(SIGN.BRACKET, "]")), result => {
         return { type: SYNTAX.array, body: result.slice(1, -1) }
     })
@@ -76,7 +80,8 @@ const braced_prima = $process($and(
         return result.slice(1, -1)[0]
     }
 )
-reflex.prima = $or(
+//prima without range itself
+const range_literal = $process($and($or(
     $type(SIGN.IDENTIFIER),
     $type(SIGN.NUMBER),
     $type(SIGN.STRING),
@@ -84,11 +89,24 @@ reflex.prima = $or(
     tuple_literal,
     array_literal,
     object_literal, __,
+), $symbol("."), $symbol("."), expression)
+    , result => {
+        return { type: SYNTAX.range, start: result[0], end: result[3] }
+    }
+)
+reflex.prima = $or(
+    range_literal,
+    $type(SIGN.IDENTIFIER),
+    $type(SIGN.NUMBER),
+    $type(SIGN.STRING),
+    braced_prima,
+    tuple_literal,
+    array_literal,
+    object_literal,
+    __,
 )
 
-const chain = slice => reflex.chain(slice)
-//TODO
-reflex.chain = $process($and(
+const chain = $process($and(
     prima, $maybe($or(
         $and($symbol("."), prima),
         $and($token(SIGN.BRACKET, "["), prima, $token(SIGN.BRACKET, "]")),
@@ -102,7 +120,14 @@ reflex.chain = $process($and(
         else {
             let results = []
             let todo = result[1].map(i => {
-                return { type: i[0]?.value, value: i[1][0] }
+                if (i[0].value === ".")
+                    return { type: i[0]?.value, value: i[1].value }
+                if (i[0].value === "[")
+                    return { type: i[0]?.value, value: i[1] }
+                if (i[0].value === "(") {
+                    return { type: i[0]?.value, value: i[1][0][0] }
+                }
+                else return i;
             })
             results = todo;
             return {
@@ -112,42 +137,56 @@ reflex.chain = $process($and(
     }
 )
 
-const unary = slice => reflex.unary(slice);
-reflex.unary = $process($and(
+const unary = $process($and(
     $maybe($or($symbol("~"), $symbol("&"), $symbol("-"),)),
     chain),
     result => {
+
         return isFalsy(result[0]) ? result[1] : { type: "unary", prefix: result[0].map(p => p.value), value: result[1] }
-    }
+    },
+
 )
 
 
-const multi = slice => reflex.multi(slice)
-reflex.multi = $process($and(
+const multi = $process($and(
     unary, $maybe($and($symbol("*"), unary))
 ), result => {
-    return isFalsy(result[1]) ? result[0] : { type: "multi", value: [result[0], ...result[1].map(i => 0 || { op: i[0].value, value: i[1] })] }
+    return isFalsy(result[1]) ? result[0] :
+        {
+            type: "multi",
+            value: [result[0], ...result[1].map(
+                i => 0 || {
+                    op: i[0].value, value: i[1]
+                })]
+        }
 })
 
-const binary = slice => reflex.binary(slice)
-reflex.binary = $process($and(
+const binary = $process($and(
     multi, $maybe($and($symbol("+"), multi))
 ), result => {
     return isFalsy(result[1]) ? result[0] : { type: "binary", value: [result[0], ...result[1].map(i => 0 || { op: i[0].value, value: i[1] })] }
 })
-const comparison = $or(
-    $and(
-        binary,
-        $or($bracket("<"), $bracket(">"), $symbol("=")),
-        binary),
-    binary,)
+const _compare_body = $and(
+    binary,
+    $or($bracket("<"), $bracket(">"), $symbol("=")),
+    binary)
+const comparison = $process($or(_compare_body, binary),
+    result => {
+        //just a binary
+        if (isFalsy(result[1])) return result;
+        else {
+            return {
+                type: SYNTAX.comparison, left: result[0], op: result[1].value, right: result[2]
+            }
+        }
+    })
 
-const expand = $and(prima, $symbol("."), $symbol("."), expression)
 
-reflex.expression = $or(rest, expand, comparison,)
+
+reflex.expression = $or(comparison,)
 
 ///////////////////////////////////////////////////
-const equal_indent_block = $and($symbol(":"), $maybe($indent()),(slice, swc) => {
+const equal_indent_block = $process($and($symbol(":"), $maybe($indent()), (slice, swc) => {
     let results = []
     let fnOrSep = 0;
     let fn = stmt;
@@ -171,45 +210,75 @@ const equal_indent_block = $and($symbol(":"), $maybe($indent()),(slice, swc) => 
     if (results.length <= 0) return Fail
     return [true, gap, results];
 })
-reflex.stmtblock = $and(
+
+    , result => result[1] ? { type:SYNTAX.block, value: result[2] } : Fail)
+reflex.stmtblock =$process( $and(
     $bracket("{"),
     $separate(stmt,
-        $or($type(SIGN.SEMI), $type(SIGN.INDENT)), { once: true }),
-    $bracket("}"))
-const singlestmt = $and(stmt, $or($type(SIGN.SEMI), $type(SIGN.INDENT)))
+        $or($type(SIGN.SEMI), $type(SIGN.INDENT)), { once: true ,auto_unfold:false}),
+    $bracket("}")),
+result=>0||{type:SYNTAX.block, value:result[1]}
+)
+const singlestmt = $process($and(stmt, $or($type(SIGN.SEMI), $type(SIGN.INDENT))), result => [result[0]])
 
-const _stmts=$or(stmtblock, equal_indent_block, singlestmt)
+const _stmts = $or(stmtblock, equal_indent_block, singlestmt)
 ///////////////////////////////////////////////
 
-const control = $and(
+const control = $process($and(
     $or($kw("if"), $kw("while"), $kw("for")),
-    $token(SIGN.BRACKET, "("), $separate(stmt, $type(SIGN.SEMI), { once: true }), $token(SIGN.BRACKET, ")"),
+    $or($and(
+        LR,
+        $separate(stmt, $type(SIGN.SEMI), { once: true, auto_unfold: false }),
+        RR),
+        _compare_body
+    ),
     _stmts
-)
+),
+    result => {
+        let condition;
+        if (result[1][1].type == SIGN.SYMBOL) {
+            condition = { type: SYNTAX.comparison, left: result[1][0], right: result[1][2], op: result[1][1].value }
+        } else {
+            //result[2].type == "comparison"
+            condition = result[1][1]
+        }
+        return { type: result[0].value, condition, body: result[2] }
+    })
 
-const assignstmt = $and($kw( "let"), $type(SIGN.IDENTIFIER), $symbol("="), expression)
+
+
+const jumpstmt = $process($and($or($kw("break"), $kw("continue"), $kw("return")), $or(stmt, $indent()))
+    , result => {
+        return { type: SYNTAX[result[0].value], body: result[1] }
+    })
+const assignstmt = $process($and($kw("let"), $type(SIGN.IDENTIFIER), $symbol("="), expression),result=>{
+    return { type: SYNTAX.let, name: result[1].value, value: result[3] }
+})
+//don't hurry of this expression, it's a little bit complex
 const iterstmt = $and(array_literal,
     $token(SIGN.BRACKET, "{"),
     $maybe(expression),
     $token(SIGN.BRACKET, "}"))
 
-const jumpstmt = $and($or($kw("break"), $kw("continue"), $kw("return")), $or(_stmts,$indent()))
-
-
-const fndecl = $and(
+const fndecl = $process($and(
     $kw("fn"),
     $type(SIGN.IDENTIFIER),
     LR,
-    $maybe($separate($and($type(SIGN.IDENTIFIER), $maybe(typemark)), $symbol(","), { once: true })),
+    $maybe(
+        $separate(
+            $and(
+                $type(SIGN.IDENTIFIER),$maybe(typemark)), 
+                $symbol(","), { once: true })
+            ),
     RR,
     _stmts
 
-)
+), result => {
+    return { type: SYNTAX.fn_def, name: result[1].value, args: isFalsy(result[3]) ? false : result[3][0], body: result[5] }
+})
 reflex.stmt = $or(
-    control, iterstmt, assignstmt, jumpstmt, expression,fndecl
+    control, iterstmt, assignstmt, jumpstmt, expression, fndecl
 )
-jlog(fndecl(tn(`fn a():a
-    b
-    b`)))
 
+jlog($maybe(stmt)(tn("let a=23"),1))
 console.log("finished")

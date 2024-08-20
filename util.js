@@ -26,6 +26,16 @@ export const SYNTAX={
     object:"<object>",
     assign:"<assign>", // a = b
     typemark:"<typemark>",
+    rest:"<rest>",
+    range:"<range>",
+    comparison:"<comparison>",
+    return:"<return>",
+    bracket:"<bracket>",
+    block:"<block>",
+    continue:"<continue>",
+    break:"<break>",
+    fn_def:"<Function_definition>",
+    let:"<let>",
 }
 export const Fail=[false,0]
 import { tk } from "./tokenize.js"
