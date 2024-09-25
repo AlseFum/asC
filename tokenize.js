@@ -5,28 +5,33 @@ function setup(rules) {
         recv(input, { no_consume }) {
             let result =
                 this.current_rule(input, this, {
-                    next_state: s => this.current_rule = rules[s],
-                    no_consume
-                })
+                    next_state: s => this.current_rule = typeof s == "function" ? s : rules[s],
+                    no_consume,peek
+                }
+                )
 
             return result;
         }
     }
 }
-export function* iterpoll(rules, source) {
+export function* pull_token(rules, source) {
     let ssm = setup(rules);
     let ind = 0;
     source += '\0';
     while (ind < source.length) {
+
         let consume = 1;
-        let result = ssm.recv(source[ind], { no_consume: () => { consume = 0 } });
+        let result = ssm.recv(source[ind], {
+            no_consume: () => { consume = 0 },
+            peek(n) { return source[n+ind] }
+        });
         ind += consume;
         if (result != undefined) yield result
     }
 
 }
 //rules:fn:(input,state,{next_state,no_consume})->result|Undone
-const normal = (i, s, { next_state, no_consume }) => {
+const normal = (i, s, { next_state, no_consume,peek }) => {
     if (i == " " && !s.cache_id) return [SIGN.SPACE];
     else if (/[A-Za-z$_]/.test(i)) {
         no_consume()
@@ -37,13 +42,15 @@ const normal = (i, s, { next_state, no_consume }) => {
         next_state("normal_number")
     }
     else if (/0/.test(i)) {
-        return[SIGN.NUMBER,0]
+        return [SIGN.NUMBER, 0]
     }
     else if (i == "\"") {
         next_state("normal_string")
     }
     else if (i == '\n' || i == "\r") {
         next_state("normal_indent")
+    }else if(i == "/" && peek(1) == "*"){
+        next_state("normal_comment")
     }
     else if ("@+-/*&=:!~.,".split("").indexOf(i) != -1) {
         return [SIGN.SYMBOL, i];
@@ -54,6 +61,15 @@ const normal = (i, s, { next_state, no_consume }) => {
     else if (i == ";") {
         //seemd could be better
         return [SIGN.SEMI]
+    }
+}
+const normal_comment = (i, s, { next_state, peek }) => {
+    if(s.cache_comment == true){
+        delete s.cache_comment
+        next_state("normal")
+    }else 
+    if (i == "*" && peek(1) == "/") {
+       s.cache_comment = true;
     }
 }
 const normal_indent = (i, s, { next_state, no_consume }) => {
@@ -145,9 +161,12 @@ const normal_identifier = (i, s, { next_state, no_consume }) => {
 }
 export let tokendef = {
     normal, normal_indent,
-    normal_string,normal_identifier,
-    normal_number, normal_float, return_dot
+    normal_string, normal_identifier,
+    normal_number, normal_float, return_dot,normal_comment
 }
 export function tk(source) {
-    return iterpoll(tokendef, source)
+    return pull_token(tokendef, source)
+}
+export function collect(source) {
+    return Array.from(tk(source))
 }

@@ -6,7 +6,8 @@ export function $and(...fns) {
     return function (slice, fn_ind) {
         let gap = 0, results = [];
         for (let i = 0; i < fns.length; i++) {
-            if (gap > slice.length) return Fail;
+           
+            if (gap > slice.length||!slice.done) return Fail;
             let result = fns[i](slice.peek(gap), fn_ind);
             if (isFalsy(result)) return Fail;
 

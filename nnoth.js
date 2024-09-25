@@ -19,6 +19,8 @@ const __ = $token(SIGN.IDENTIFIER, "_")
 const comma = $symbol(",")
 const LR = $bracket("(")
 const RR = $bracket(")")
+const LB = $bracket("[")
+const RB = $bracket("]")
 //
 // used for reflex,thou it causes some performance loss, but it's the only way?
 const reflex = {}
@@ -33,10 +35,10 @@ const typemark = $process($and($symbol(":"), $maybe($type(SIGN.IDENTIFIER)))
         return { type: SYNTAX.typemark, value: result[1][0].value }
     })
 
-let tuple_literal = $process($and(
-    $token(SIGN.BRACKET, "("),
-    $separate(prima, $symbol(","), { once: false, auto_unfold: false }),
-    $token(SIGN.BRACKET, ")")),
+export let tuple_literal = $process($and(
+    LR,
+    $separate(prima, comma, { once: false, auto_unfold: false }),
+    RR),
     result => {
         return { type: SYNTAX.tuple, body: result.slice(1, -1)[0] }
     })
@@ -47,9 +49,9 @@ const rest = $process($and($symbols("..."), prima)
         return { type: SYNTAX.rest, body: result[1] }
     })
 const array_literal = $process($and(
-    $token(SIGN.BRACKET, "["),
+    LB,
     $separate(prima, $symbol(","), { once: true, auto_unfold: false }),
-    $token(SIGN.BRACKET, "]")), result => {
+    RB), result => {
         return { type: SYNTAX.array, body: result.slice(1, -1) }
     })
 
@@ -105,7 +107,12 @@ reflex.prima = $or(
     object_literal,
     __,
 )
-
+export const pipe=$process(
+    $and(
+    tuple_literal,$maybe($and($symbol("->"),prima)))
+, result => {
+    return {type:"pip",body:result[0],next:result[1]};
+})
 const chain = $process($and(
     prima, $maybe($or(
         $and($symbol("."), prima),
@@ -279,6 +286,3 @@ const fndecl = $process($and(
 reflex.stmt = $or(
     control, iterstmt, assignstmt, jumpstmt, expression, fndecl
 )
-
-jlog($maybe(stmt)(tn("let a=23"),1))
-console.log("finished")
