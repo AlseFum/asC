@@ -1,4 +1,7 @@
 {
-    "type":"module",
-    "scripts": {"test":"node test.js"}
+    "type": "module",
+    "scripts": {
+        "test": "node test.js"
+    }
+
 }
