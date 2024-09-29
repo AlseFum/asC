@@ -1,0 +1,1 @@
+|square, index|{console.log("nihao");}

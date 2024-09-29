@@ -46,7 +46,7 @@ export function $maybe(fn) {
 
 export function $separate(
     fn, separator,
-    { once = false, loose = true, auto_unfold = true } = {}) {
+    { once = false, loose = true, auto_unfold = true ,ignore_enter=true} = {}) {
     //once :fn could appear just once
     return function (slice, fn_ind) {
         let results = []
@@ -58,11 +58,21 @@ export function $separate(
 
         let gap = result[1];
         while (isTruthy(result) && (gap <= slice.length||slice.done==false)) {
-
+            
             if (fnOrSep == 0) results.push(result[2])//ignore separator
             
             fnOrSep=!fnOrSep;
-
+            if(ignore_enter){
+                let next = slice.get(gap)
+                if( next&&next[0] == TokenType.INDENT ){
+                    // console.log("ignore indent")
+                    // console.log(slice.get(gap-1))
+                    // console.log(slice.get(gap))
+                    // console.log(slice.get(gap+1))
+                    gap+=1;
+                }
+            }
+            
             result = (fnOrSep ? separator : fn)(slice.peek(gap), fn_ind);
             gap += result[1];
         }

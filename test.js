@@ -34,6 +34,7 @@ const directoryPath = './usecase'; // 替换为你的目录路径
 readDirectory(directoryPath,i=>{
     fs.readFile(i,(err,data)=>{
         if(err) throw err
-       if(0) test_item(data.toString(),program,"File testing:"+i)
+       if(1) test_item(data.toString(),program,"File testing:"+i)
     })
 });
+console.log(new Date())

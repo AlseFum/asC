@@ -9,7 +9,7 @@ const names = {
     BRACKET: "<Bracket>",
     STRING: "<String>",
     SEMI: "<Semicolon>",
-    ATOM: "<Atom>",
+    BACKTICK: "<Backtick>",
     EOF: 127
 }
 if (MODE == "release") {

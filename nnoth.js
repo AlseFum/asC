@@ -1,13 +1,11 @@
 
 import {
     $and, $or, $maybe, $separate,
-    $kw, $token, $symbol, $type, $process as $branch, $indent,
-    $bracket,
-    $symbols,
+    $kw, $token, $symbol, $type, $process as $branch, $indent, $bracket, $symbols,
 } from './parser_builder.js'
 import { TT, SYNTAX, Fail, isTruthy, isFalsy, } from "./util.js"
 
-//some frequent token
+//#### some frequent token
 const __ = $token(TT.IDENTIFIER, "_")
 const comma = $symbol(",")
 const LR = $bracket("(")
@@ -20,48 +18,56 @@ const LS = $bracket("<")
 const RS = $bracket(">")
 const Enter = $maybe($indent())
 const ___ = Enter;
-//
 
-// used for reflex, causes some performance loss. but it's the only way?
+export const varname = $type(TT.IDENTIFIER);
+export const backtick = $type(TT.BACKTICK);
+//atom is specified backtick
+export const atom = backtick;
+
+//#### used for reflex, causes some performance loss. but it's the only way?
 const reflex = {}
-export const prima = (slice, swc) => reflex.prima(slice, swc)
+export const prima = (slice, swc) => reflex.primitive(slice, swc)
 export const expression = (slice, swc) => reflex.expression(slice, swc)
 export const stmt = (slice, fn_ind) => reflex.stmt(slice, fn_ind)
-export const stmtblock = (slice, ind) => reflex.stmtblock(slice, ind)
+export const stmtblock = (slice, ind) => reflex.block(slice, ind)
 export const rest = (slice, swc) => reflex.rest(slice, swc)
 export const _stmts = (slice, ind) => reflex._stmts(slice, ind)
-export const equal_indent_block = (slice, swc) => reflex.equal_indent_block(slice, swc);
-
-const typemark = $branch($and($symbol(":"), $maybe($type(TT.IDENTIFIER)))
+export const typemark = (slice, swc) => reflex.typemark(slice, swc)
+export const indent_block = (slice, swc) => reflex.indent_block(slice, swc);
+export const typename = (slice, swc) => reflex.typename(slice, swc)
+//#### inferior units
+reflex.typename = $branch($and($type(TT.IDENTIFIER), $maybe($and(LS, $separate(typename, comma, { once: true }), RS))), result => { })
+reflex.typemark = $branch($and($symbol(":"), $maybe(typename))
     , result => {
         return { type: SYNTAX.typemark, value: result[1][0].value }
     })
-export const signal = $type(TT.ATOM)
-export const atom = signal;
 
+const pair_key = $or(atom, varname, $type(TT.STRING))
+//#### primitives
 export let tuple_literal = $branch($and(
     LR,
-    $separate($or(rest, prima), comma, { once: false, auto_unfold: false }),
+    $separate($or(rest, prima), comma, { auto_unfold: false }),
     RR),
     result => {
         return { type: SYNTAX.tuple, body: result.slice(1, -1)[0] }
     })
-// used in expansion
+
 
 const array_literal = $branch($and(
     LB,
-    $separate($or(rest, prima), $symbol(","), { once: true, auto_unfold: false }),
+    $maybe($separate($or(rest, prima), $symbol(","), { once: true, auto_unfold: false, loose: true })),
     RB), result => {
         return { type: SYNTAX.array, body: result.slice(1, -1) }
     })
 
 const record_literal = $branch(
     $and(
-        $token(TT.BRACKET, "{"),
+        LC,
         $separate(
-            $and($or($type(TT.IDENTIFIER), signal),
-                $maybe(typemark), $symbol("="), expression), $symbol(","), { once: true, auto_unfold: false }),
-        $token(TT.BRACKET, "}")),
+            $and(pair_key, ___,
+                $maybe(typemark), ___, $symbol("="), ___, expression),
+            comma, { once: true, auto_unfold: false }),
+        RC),
     result => {
         return {
             type: SYNTAX.object, body: result[1].map(
@@ -74,14 +80,14 @@ const record_literal = $branch(
                 })
         }
     })
-reflex.rest = $branch($and($symbols("..."), $or(tuple_literal, array_literal, record_literal))
+reflex.rest = $branch($and($symbols("..."), $or(varname, tuple_literal, array_literal, record_literal))
     , result => {
         return { type: SYNTAX.rest, body: result[1] }
     })
 const braced_prima = $branch($and(
-    $token(TT.BRACKET, "("),
-    expression,
-    $token(TT.BRACKET, ")")), result => {
+    LR, ___,
+    expression, ___,
+    RR), result => {
         return result.slice(1, -1)[0]
     }
 )
@@ -94,12 +100,15 @@ export const range_literal = $branch($and($or(
     tuple_literal,
     array_literal,
     record_literal, __,
-), $symbol("."), $symbol("."), expression)
+), ___, $symbols(".."), ___, expression)
     , result => {
         return { type: SYNTAX.range, start: result[0], end: result[3] }
     }
 )
-reflex.prima = $or(
+export let tuple_dir = $branch($and(
+    LR, ___, $type(TT.IDENTIFIER), ___, $kw("for"), ___, $type(TT.IDENTIFIER), ___, $kw("in"), ___, range_literal, ___, $maybe($kw("if"), ___, expression, ___, $maybe($kw("else"), ___, expression)), RR
+))
+reflex.primitive = $or(
     range_literal,
     $type(TT.IDENTIFIER),
     $type(TT.NUMBER),
@@ -107,22 +116,21 @@ reflex.prima = $or(
     braced_prima,
     tuple_literal,
     array_literal,
-    record_literal,
+    record_literal, atom,
     __,
 )
+//#### flow
 export const pipe = $branch(
-    $and(
-        tuple_literal, $maybe($and($symbol("-"), RS, prima)))
-    , result => {
-        return { type: "pip", body: result[0], next: result[1] };
-    })
-const chain = $branch($and(
+    $and(tuple_literal, $maybe($and($symbol("-"), $bracket(">"), prima)))
+)
+
+export const chain = $branch($and(
     prima, $maybe($or(
-        $and($symbol("."), prima),
-        $and($token(TT.BRACKET, "["), prima, $token(TT.BRACKET, "]")),
-        $and($token(TT.BRACKET, "("),
-            $maybe($separate(expression, comma, { once: true, auto_unfold: false })),
-            $token(TT.BRACKET, ")"))
+        $and(___, $symbol("."), ___, varname),
+        $and(___, LB, ___, prima, ___, RB),
+        $and(LR,
+            $maybe($separate(expression, comma, { once: true, auto_unfold: false, loose: true })),
+            RR)
     ))
 )
     , result => {
@@ -146,20 +154,19 @@ const chain = $branch($and(
         }
     }
 )
-
+const unary_kw = ["typeof", "in"]
 const unary = $branch($and(
-    $maybe($or($symbol("~"), $symbol("&"), $symbol("-"),)),
+    $maybe($or($symbol("~"), $symbol("&"), $symbol("-"), ...unary_kw.map(i => $kw(i)))), ___,
     chain),
     result => {
-
         return isFalsy(result[0]) ? result[1] : { type: "unary", prefix: result[0].map(p => p.value), value: result[1] }
-    },
-
+    }
 )
+const backward_unary = $and(unary, $maybe($or($symbols("++"), $symbols("--"))))
 
-
+const multi_kw = ["and", "or"]
 const multi = $branch($and(
-    unary, $maybe($and($symbol("*"), unary))
+    backward_unary, $maybe($and(___, $or($symbol("*"), ...multi_kw.map(i => $kw(i))), ___, backward_unary))
 ), result => {
     return isFalsy(result[1]) ? result[0] :
         {
@@ -171,14 +178,14 @@ const multi = $branch($and(
         }
 })
 
+const binary_kw = ["and", "or"]
 const binary = $branch($and(
-    multi, $maybe($and($symbol("+"), multi))
-), result => {
-    return isFalsy(result[1]) ? result[0] : { type: "binary", value: [result[0], ...result[1].map(i => 0 || { op: i[0].value, value: i[1] })] }
-})
+    multi, $maybe($and(___, $or($symbol("+"), ...binary_kw.map(i => $kw(i))), ___, multi))
+))
+//extracted
 const _compare_body = $and(
-    binary,
-    $or($bracket("<"), $bracket(">"), $symbol("=")),
+    binary, ___,
+    $or($bracket("<"), $bracket(">"), $symbol("=")), ___,
     binary)
 export const comparison = $branch($or(_compare_body, binary),
     result => {
@@ -191,65 +198,17 @@ export const comparison = $branch($or(_compare_body, binary),
         }
     })
 
-export const closure = $branch($or(
-    $and(
-        $symbol("|"), $separate(expression, $symbol(","), { once: true, auto_unfold: false }), $symbol("|"), _stmts
-    ),
-    $and(LR, $separate(expression, $symbol(","), { once: true, auto_unfold: false }), RR, $symbol("="), RS, _stmts),
-    $and($kw("lambda"), $separate(expression, $symbol(","), { once: true, auto_unfold: false })
-        , equal_indent_block)))
-
-reflex.expression = $or(comparison, closure);
-
-//------------------------------------------------------------------------------------------
-reflex.equal_indent_block = $branch($and($symbol(":"), $maybe($indent()),
-    (slice, swc) => {
-        let results = []
-        let fnOrSep = 0;
-        let fn = stmt;
-        let indent = undefined;
-        let separator = $or($token(TT.SEMI), $type(TT.INDENT))
-
-        let result = (fnOrSep ? separator : fn)(slice, swc);
-        if (isFalsy(result)) return Fail;
-        let gap = result[1];
-        while (isTruthy(result) && gap <= slice.length) {
-            if (fnOrSep == 0) results.push(result[2]); else {
-                if (indent == undefined) indent = result[2].value;
-                if (indent != result[2].value) break;
-            }
-            if (fnOrSep == 0) fnOrSep = 1; else fnOrSep = 0;
-            result = (fnOrSep ? separator : fn)(slice.peek(gap), swc);
-            gap += result[1];
-        }
-        if (results.length == 1) return [true, gap, results[0]]
-
-        if (results.length <= 0) return Fail
-        return [true, gap, results];
-    })
-
-    ,
-    result => result[1] ? { type: SYNTAX.block, value: result[2] } : Fail)
-
-
-reflex.stmtblock = $branch($and(
-    LC,
-    $separate(stmt,
-        $or($type(TT.SEMI), $type(TT.INDENT)), { once: true, auto_unfold: false }),
-    RC),
-    result => 0 || { type: SYNTAX.block, value: result[1] }
-)
-export const singlestmt = $branch($and(stmt, $or($type(TT.SEMI), $type(TT.INDENT))), result => [result[0]])
-
-reflex._stmts = $or(stmtblock, equal_indent_block, singlestmt)
-
-//-------------------------------------------------------------
+const assignleft = $or($type(TT.IDENTIFIER), atom, tuple_literal, array_literal, record_literal)
+const assignstmt = $branch($and($kw("let"),___, assignleft,___, $symbol("="),___, expression), result => {
+    return { type: SYNTAX.let, name: result[1].value, value: result[3] }
+})
+//#### class. Complicated
 const class_def_head = $kw("of")
 const class_def_pair = $and($or($type(TT.IDENTIFIER), $type(TT.ATOM)), $symbol(":"), expression)
 export const class_def = $branch($and(
     $kw("class"), $maybe(class_def_head), LC, $separate($or(class_def_pair, $symbol(","), { once: true, auto_unfold: false }), RC, _stmts
     )))
-///////////////////////////////////////////////
+//#### control
 
 export const control = $branch($and(
     $or($kw("if"), $kw("while"), $kw("for")),
@@ -278,19 +237,21 @@ const jumpstmt = $branch($and($or($kw("break"), $kw("continue"), $kw("return")),
     , result => {
         return { type: SYNTAX[result[0].value], body: result[1] }
     })
-const assignleft = $or($type(TT.IDENTIFIER), signal, tuple_literal, array_literal, record_literal)
-const assignstmt = $branch($and($kw("let"), assignleft, $symbol("="), expression), result => {
-    return { type: SYNTAX.let, name: result[1].value, value: result[3] }
-})
-//don't hurry of this expression, it's a little bit complex
-const iterstmt = $and(array_literal,
-    $token(TT.BRACKET, "{"),
-    $maybe(expression),
-    $token(TT.BRACKET, "}"))
+
+const _arrow = $and($symbol("="), RS)
+export const closure = $branch($or(
+    $and(
+        $symbol("|"), $separate(expression, $symbol(","), { once: true, auto_unfold: false }), $symbol("|"), _stmts
+    ),
+    $and(LR, $separate(expression, $symbol(","), { once: true, auto_unfold: false }), RR, _arrow, _stmts),
+    $and(varname, _arrow, _stmts),
+    $and($kw("lambda"), $separate(expression, $symbol(","), { once: true, auto_unfold: false })
+        , indent_block,)))
+
 
 export const fndecl = $branch($and(
     $or($kw("fn"), $kw("def"), $kw("function"), $kw("method"), $kw("func")),
-    $or($type(TT.IDENTIFIER), $type(TT.ATOM)),
+    $or($type(TT.IDENTIFIER), backtick),
     LR,
     $maybe(
         $separate(
@@ -302,11 +263,53 @@ export const fndecl = $branch($and(
     _stmts
 
 ), result => {
-    //decl: single stmt. defi: stmt blocks
-    //yet some complex functions may need separate decl and defi?
     return { type: SYNTAX.fn_def, name: result[1].value, args: isFalsy(result[3]) ? false : result[3][0], body: result[5] }
 })
+reflex.expression = $or(comparison, closure);
+
+export const singlestmt = $branch($and(stmt, $or($type(TT.SEMI), $type(TT.INDENT))), result => [result[0]])
+export const line_stmt = $and($symbol(":"), singlestmt)
+reflex.indent_block = function (slice, swc) {
+
+    if (slice.get(0)[1] != ":") return Fail
+    if (!slice.get(1)) return Fail
+    if (slice.get(1)[0] != TT.INDENT) return Fail
+
+
+    //fnOrSep = 0 means fn, 1 means separator to be recved
+    let stmt_or_indent = 0;
+    let results = [], cur_indent = -1;
+    let result = (stmt_or_indent ? $indent() : stmt)(slice.peek(2), swc);
+    if (isFalsy(result)) return Fail;
+
+    let gap = result[1] + 2;
+    while (isTruthy(result) && (gap <= slice.length || slice.done == false)) {
+
+        if (stmt_or_indent == 0) {
+            results.push(result[2])
+        }
+        else {
+            if (cur_indent == -1) cur_indent = result[2].value;
+            else if (cur_indent != result[2].value) break;
+        }
+        stmt_or_indent = !stmt_or_indent;
+        result = (stmt_or_indent ? $indent() : stmt)(slice.peek(gap), swc);
+        gap += result[1];
+
+    }
+    return [true, gap, results];
+}
+reflex.block = $branch($and(
+    LC,
+    $maybe($separate(stmt,
+        $or($type(TT.SEMI), $type(TT.INDENT)), { once: true, auto_unfold: false })),
+    RC),
+    result => 0 || { type: SYNTAX.block, value: result[1] }
+)
+
+
+reflex._stmts = $or(stmtblock, indent_block, singlestmt, line_stmt)
 reflex.stmt = $or(
-    fndecl, control, iterstmt, assignstmt, jumpstmt, expression, $and($type(TT.SEMI), $maybe($type(TT.SEMI)))
+    fndecl, control, assignstmt, jumpstmt, expression
 )
 export const program = $separate(stmt, $or($type(TT.SEMI), $type(TT.INDENT)), { once: true, auto_unfold: false })

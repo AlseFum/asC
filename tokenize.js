@@ -49,10 +49,10 @@ const normal = (i, s, { next_state, no_consume, peek }) => {
     else if (i == "\"") {
         next_state("normal_string")
     } else if (i == "`") {
-        next_state("atom_string")
+        next_state("backtick_string")
     }
     else if (i == '\n' || i == "\r") {
-       // next_state("normal_indent")
+        next_state("normal_indent")
     } else if (i == "/" && peek(1) == "/") {
         next_state("line_comment")
     } else if (i == "/" && peek(1) == "*") {
@@ -118,12 +118,12 @@ const normal_string = (i, s, { next_state }) => {
         s.cache_string += i
     }
 }
-const atom_string = (i, s, { next_state }) => {
+const backtick_string = (i, s, { next_state }) => {
     if (i == "`") {
         let cs = s.cache_string;
         delete s.cache_string
         next_state("normal")
-        return [TT.ATOM, cs]
+        return [TT.BACKTICK, cs]
     } else {
         if (s.cache_string == undefined) s.cache_string = ""
         s.cache_string += i
@@ -192,7 +192,7 @@ export let tokendef = {
     normal,
     normal_indent,
     normal_string,
-    normal_identifier, atom_string,
+    normal_identifier, backtick_string,
     normal_number, normal_float, return_dot,
     normal_comment, sharp_comment, line_comment
 }

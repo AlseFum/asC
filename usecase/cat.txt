@@ -1,1 +1,16 @@
-func `add`(a,b){a+b};;;;;;;;;;;;;;;
+function calculateSquares(arr) {
+    let squares = [];
+    for (let i = 0; i < arr.length; i++) {
+        squares.push(arr[i] * arr[i]);
+    }
+    return squares;
+};
+let squares = calculateSquares(numbers);
+console.log("原数组:", numbers);
+console.log("平方数组:", squares);
+
+// 使用条件语句
+if (squares.length > 0) {
+    console.log("平方数组不为空");
+};
+a.b(|a|d;);
